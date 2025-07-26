@@ -53,7 +53,17 @@ Do you tend to make quick decisions, or do you research thoroughly first?
 
 Have you invested before (stocks, real estate, crypto, etc.)? How confident do you feel managing money or making financial choices?
 
-From there, we can start getting a full picture of what works best for your personality and goals."""
+From there, we can start getting a full picture of what works best for your personality and goals.
+
+End your response with: "PROFILE_COMPLETE_SIGNAL"
+
+Use PROFILE_COMPLETE_SIGNAL when you have:
+- Monthly income/expenses  
+- At least 2 financial goals
+- Risk tolerance discussion
+- Investment experience
+- Age and location
+"""
 
 # Persistent chat history for the session
 chat_history = []
@@ -87,39 +97,37 @@ def build_gemini_messages(user_message=None):
 async def handle_user_message(user_message: str = None):
     """Handles a user message, updates chat history, and streams Gemini response."""
     global chat_history
-    # If chat_history is empty, start with system prompt and send only that to Gemini
-    if not chat_history:
-        add_to_history("model", SYSTEM_PROMPT)
-        messages = [{"role": "model", "parts": [{"text": SYSTEM_PROMPT}]}]
-    else:
-        messages = build_gemini_messages(user_message)
-    logging.info(f"Message being sent to Gemini: {messages}")
-    # Query Gemini
-    result = await query_gemini(messages)
-    # If successful, update chat_history with the new user message and model response
-    if result.get('candidates'):
-        if user_message:
-            add_to_history("user", user_message)
-        if result['candidates'][0].get('content'):
-            model_response = result['candidates'][0]['content']
-            if 'role' not in model_response:
-                model_response['role'] = 'model'
-            chat_history.append(model_response)
-    # Log the raw Gemini API response for debugging
-    
-    logging.basicConfig(level=logging.INFO)
-    logging.info(f"Gemini API raw response: {result}")
-    # Defensive check for Gemini API response
-    try:
-        candidates = result.get('candidates')
-        if not candidates or 'content' not in candidates[0] or 'parts' not in candidates[0]['content']:
-            output = "Sorry, I couldn't process your request. Please try again."
-        else:
-            output = candidates[0]['content']['parts'][0].get('text', "Sorry, no response text available.")
-    except Exception as e:
-        output = f"Error: {str(e)}"
-
     async def event_stream():
+        # If chat_history is empty, start with system prompt and send only that to Gemini
+        if not chat_history:
+            add_to_history("model", SYSTEM_PROMPT)
+            messages = [{"role": "model", "parts": [{"text": SYSTEM_PROMPT}]}]
+        else:
+            messages = build_gemini_messages(user_message)
+        logging.info(f"Message being sent to Gemini: {messages}")
+        # Query Gemini
+        result = await query_gemini(messages)
+        # If successful, update chat_history with the new user message and model response
+        if result.get('candidates'):
+            if user_message:
+                add_to_history("user", user_message)
+            if result['candidates'][0].get('content'):
+                model_response = result['candidates'][0]['content']
+                if 'role' not in model_response:
+                    model_response['role'] = 'model'
+                chat_history.append(model_response)
+        # Log the raw Gemini API response for debugging
+        logging.basicConfig(level=logging.INFO)
+        logging.info(f"Gemini API raw response: {result}")
+        # Defensive check for Gemini API response
+        try:
+            candidates = result.get('candidates')
+            if not candidates or 'content' not in candidates[0] or 'parts' not in candidates[0]['content']:
+                output = "Sorry, I couldn't process your request. Please try again."
+            else:
+                output = candidates[0]['content']['parts'][0].get('text', "Sorry, no response text available.")
+        except Exception as e:
+            output = f"Error: {str(e)}"
         if output:
             print(f"[SSE DEBUG] Output length: {len(output)}")
             print(f"[SSE DEBUG] Output content: {output}")
