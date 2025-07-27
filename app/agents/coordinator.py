@@ -52,40 +52,50 @@ class AgentCoordinator:
                     yield await create_sse_event("\n---\n\n[COORDINATOR] PROFILE_COMPLETE_SIGNAL detected. Moving to summary agent...")
                     logging.info("[COORDINATOR] Extracting profile using summary agent (signal-based).")
                     await self._extract_profile()
-                    yield await create_sse_event("\n✅ Profile extracted successfully!")
+                    yield await create_sse_event("\nProfile extracted successfully!")
                     logging.info("[COORDINATOR] Transitioning to RECOMMENDATION stage.")
+                    yield await create_sse_event("\n---\n\n[COORDINATOR] Moving to recommendation agent...")
                     self.current_stage = WorkflowStage.RECOMMENDATION
-                    async for next_chunk in await self._handle_recommendation_stage():
+                    # Stream recommendations to frontend
+                    async for next_chunk in self._handle_recommendation_stage():
                         yield next_chunk
-                    return
+                    # Do not return here; let the generator finish naturally
                 yield chunk
         if user_message:
             self.conversation_turn_count += 1
             logging.info(f"[COORDINATOR] Conversation turn count: {self.conversation_turn_count}")
-        # Fallback: if profile JSON not detected, use completeness check
+        # Fallback: if signal not detected, use completeness check
         if self.conversation_turn_count >= 4:
             is_complete = await self._is_profile_complete()
             logging.info(f"[COORDINATOR] Profile completeness check result: {is_complete}")
             if is_complete:
                 logging.info("[COORDINATOR] Sufficient information gathered. Transitioning to PROFILE_EXTRACTION stage.")
                 self.current_stage = WorkflowStage.PROFILE_EXTRACTION
-                return await self._handle_profile_extraction_stage()
+                # Yield profile extraction and recommendation events in order
+                async def combined_stream():
+                    await self._extract_profile()
+                    yield await create_sse_event("\nProfile extracted successfully!")
+                    self.current_stage = WorkflowStage.RECOMMENDATION
+                    async for next_chunk in self._handle_recommendation_stage():
+                        yield next_chunk
+                # Do not return here; let the generator finish naturally
         return stream()
     
     async def _create_enhanced_stream_with_transition(self, original_stream):
         async def enhanced_stream():
             async for chunk in original_stream:
                 yield chunk
-            yield await create_sse_event("\n\n---\n\n🔄 **Analysis Complete!** I have all the information I need. Let me now:")
-            yield await create_sse_event("\n📊 Extract and organize your financial profile...")
+            yield await create_sse_event("\n\n---\n\n**Analysis Complete!** I have all the information I need. Let me now:")
+            yield await create_sse_event("\nExtract and organize your financial profile...")
             logging.info("[COORDINATOR] Extracting profile using summary agent.")
             await self._extract_profile()
-            yield await create_sse_event("\n✅ Profile extracted successfully!")
+            yield await create_sse_event("\nProfile extracted successfully!")
             logging.info("[COORDINATOR] Transitioning to RECOMMENDATION stage.")
             self.current_stage = WorkflowStage.RECOMMENDATION
             # Immediately start recommendation stage after profile extraction
-            async for chunk in await self._handle_recommendation_stage():
+            async for chunk in self._handle_recommendation_stage():
                 yield chunk
+        # Do not return here; let the generator finish naturally
         return enhanced_stream()
     async def _handle_profile_extraction_stage(self):
         logging.info("[COORDINATOR] PROFILE_EXTRACTION stage: extracting profile.")
@@ -93,8 +103,15 @@ class AgentCoordinator:
         self.current_stage = WorkflowStage.RECOMMENDATION
         logging.info("[COORDINATOR] Transitioning to RECOMMENDATION stage.")
         # Immediately start recommendation stage after profile extraction
-        return await self._handle_recommendation_stage()
+        # Return a generator that yields both profile extraction and recommendation events
+        async def combined_stream():
+            yield await create_sse_event("\nProfile extracted successfully!")
+            async for chunk in self._handle_recommendation_stage():
+                yield chunk
+        # Do not return here; let the generator finish naturally
+        return combined_stream()
     async def _handle_recommendation_stage(self):
+        logging.info("[COORDINATOR] Entering _handle_recommendation_stage")
         try:
             from .recommendations import generate_recommendations
             if self.user_profile:
@@ -102,26 +119,25 @@ class AgentCoordinator:
                 self.recommendations_generated_at = datetime.now()
                 logging.info(f"Recommendations generated successfully at {self.recommendations_generated_at}")
                 recommendations_text = self.recommendations.get('recommendations_text', '')
-                async def recommendations_stream():
-                    yield await create_sse_event("\n🎯 **Your Personalized Financial Recommendations:**\n\n")
-                    chunk_size = 100
-                    for i in range(0, len(recommendations_text), chunk_size):
-                        chunk = recommendations_text[i:i + chunk_size]
-                        yield await create_sse_event(chunk)
-                    yield await create_sse_event("\n\n---\n\n💬 **What's Next?** Feel free to ask me any questions about these recommendations or request clarification on any specific points!")
+                chat_msg = f"\n**Your Personalized Financial Recommendations:**\n\n{recommendations_text}\n\n---\n\n💬 **What's Next?** Feel free to ask me any questions about these recommendations or request clarification on any specific points!"
+                chat_history.append({"role": "model", "parts": [{"text": chat_msg}]})
                 self.current_stage = WorkflowStage.COMPLETE
-                return recommendations_stream()
+                logging.info("[COORDINATOR] Streaming recommendations to frontend")
+                logging.info("[COORDINATOR] Exiting _handle_recommendation_stage (COMPLETE)")
+                yield await create_sse_event(chat_msg)
+                # Do not return here; let the generator finish naturally
             else:
-                async def error_stream():
-                    yield await create_sse_event("I apologize, but I couldn't generate specific recommendations at this time. Please try asking me specific questions about your financial situation.")
+                logging.info("[COORDINATOR] No user profile, cannot generate recommendations")
                 self.current_stage = WorkflowStage.COMPLETE
-                return error_stream()
+                logging.info("[COORDINATOR] Exiting _handle_recommendation_stage (COMPLETE - error)")
+                yield await create_sse_event("I apologize, but I couldn't generate specific recommendations at this time. Please try asking me specific questions about your financial situation.")
+                # Do not return here; let the generator finish naturally
         except Exception as e:
             logging.error(f"Error generating recommendations: {e}")
-            async def fallback_stream():
-                yield await create_sse_event("I apologize, but I encountered an issue generating specific recommendations. Please try again later.")
             self.current_stage = WorkflowStage.COMPLETE
-            return fallback_stream()
+            logging.info("[COORDINATOR] Exiting _handle_recommendation_stage (COMPLETE - fallback)")
+            yield await create_sse_event("I apologize, but I encountered an issue generating specific recommendations. Please try again later.")
+            # Do not return here; let the generator finish naturally
     
     async def _is_profile_complete(self) -> bool:
         """
